@@ -1,0 +1,84 @@
+name: open-design-claude
+
+# Server-Variante: Image kommt aus Registry, KEIN lokaler Build.
+# Watchtower haengt mit dran und zieht alle 6h die neueste Version.
+#
+# Voraussetzung:
+#   - OPEN_DESIGN_IMAGE zeigt auf eine erreichbare Registry
+#     (z.B. ghcr.io/robmus/open-design-claude:latest)
+#   - .env.claude-cli existiert (Helper-Script legt sie an)
+
+services:
+  open-design:
+    container_name: open-design-claude
+    image: ${OPEN_DESIGN_IMAGE}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=1024}
+      OD_BIND_HOST: 0.0.0.0
+      OD_ALLOWED_ORIGINS: ${OPEN_DESIGN_ALLOWED_ORIGINS:-}
+      OD_PORT: 7456
+      OD_WEB_PORT: ${OPEN_DESIGN_PORT:-7456}
+      HOME: /home/open-design
+      CLAUDE_CONFIG_DIR: /home/open-design/.claude
+    networks:
+      - od-net
+    ports:
+      - "${OPEN_DESIGN_BIND:-127.0.0.1}:${OPEN_DESIGN_PORT:-7456}:7456"
+    volumes:
+      - open_design_data:/app/.od
+      - claude_home:/home/open-design/.claude
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${OPEN_DESIGN_MEM_LIMIT:-2g}
+    pids_limit: 512
+    labels:
+      # Watchtower-Trigger: dieser Container wird ueberwacht.
+      com.centurylinklabs.watchtower.enable: "true"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:7456/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  watchtower:
+    container_name: open-design-watchtower
+    image: containrrr/watchtower:latest
+    restart: unless-stopped
+    environment:
+      # Nur Container mit Label enable=true ueberwachen, nicht alle.
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: ${WATCHTOWER_POLL_INTERVAL:-21600}  # 6h
+      WATCHTOWER_INCLUDE_RESTARTING: "true"
+      WATCHTOWER_NOTIFICATIONS_LEVEL: info
+      TZ: ${TZ:-Europe/Berlin}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Damit Watchtower auf private Registries zugreifen kann (GHCR via PAT etc.).
+      - ${HOME}/.docker/config.json:/config.json:ro
+    networks:
+      - od-net
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+
+networks:
+  od-net:
+    name: od-net
+    driver: bridge
+
+volumes:
+  open_design_data:
+  claude_home:

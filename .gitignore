@@ -59,6 +59,10 @@ docs/superpowers/
 # Local secrets (PostHog keys, BYOK creds for local testing, etc.)
 .env.local
 .env.*.local
+
+# Deploy-Env fuer Claude-CLI Server-Variante (enthaelt evtl. Origins, Ports,
+# spaeter ggf. Auth-Tokens fuer den Reverse Proxy). .example bleibt im Repo.
+deploy/.env.claude-cli
 # Local design assistant context
 .impeccable.md
 
