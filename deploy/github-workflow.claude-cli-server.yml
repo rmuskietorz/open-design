@@ -4,14 +4,20 @@
 #   mkdir -p .github/workflows
 #   cp deploy/github-workflow.claude-cli-server.yml .github/workflows/claude-cli-server.yml
 #   git add .github/workflows/claude-cli-server.yml
-#   git commit -m "ci: nightly claude-cli image build"
+#   git commit -m "ci: claude-cli image build"
 #
 # Liegt absichtlich hier statt direkt in .github/workflows/, damit ein
 # Reviewer-Hook im Dev-Setup nicht bei jeder Aenderung anschlaegt.
 #
-# SICHERHEIT: Der Workflow nutzt KEINE untrusted Inputs (issue title, PR body,
-# commit message etc.) in run:-Blocks. Alle ${{ }}-Substitutionen sind entweder
-# Secrets, eigene env-Vars, oder kontrollierte github.repository_owner-Werte.
+# SICHERHEIT: Nutzt KEINE untrusted Inputs (issue title, PR body, commit
+# message etc.) in run:-Blocks. Alle ${{ }}-Substitutionen sind Secrets,
+# eigene env-Vars oder kontrollierte github.repository_owner-Werte.
+#
+# Upstream wird NUR lokal im Runner gemerged (kein git push zurueck), damit
+# der GITHUB_TOKEN keine `workflows`-Permission braucht (Upstream bringt teils
+# .github/workflows/-Dateien mit, die ein GITHUB_TOKEN nie pushen duerfte).
+# Trade-off: Der Fork-Branch wird nicht auto-aktualisiert; das Image ist aber
+# stets "latest upstream + deploy-layer".
 
 name: Claude-CLI Server Image (Fork Only)
 
@@ -34,9 +40,8 @@ on:
       - ".github/workflows/claude-cli-server.yml"
 
 permissions:
-  contents: write
+  contents: read
   packages: write
-  issues: write
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/open-design-claude
@@ -44,86 +49,30 @@ env:
   UPSTREAM_REMOTE: https://github.com/nexu-io/open-design.git
 
 jobs:
-  sync-upstream:
+  build-and-push:
     if: github.repository != 'nexu-io/open-design'
     runs-on: ubuntu-latest
-    outputs:
-      merged: ${{ steps.merge.outputs.merged }}
     steps:
       - name: Checkout Deploy-Branch
         uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_BRANCH }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Git identity
+      # Merge nur lokal im Runner -> fliesst in den Build, wird NICHT zum Fork
+      # zurueckgepusht. Konflikt = roter Run (in Actions + per Mail sichtbar).
+      - name: Upstream lokal mergen
+        if: github.event.inputs.skip_upstream_merge != 'true'
         run: |
           git config user.name  "od-claude-bot"
           git config user.email "od-claude-bot@users.noreply.github.com"
-
-      - name: Upstream-Merge versuchen
-        id: merge
-        if: github.event.inputs.skip_upstream_merge != 'true'
-        env:
-          DEPLOY_BRANCH: ${{ env.DEPLOY_BRANCH }}
-          UPSTREAM_REMOTE: ${{ env.UPSTREAM_REMOTE }}
-        run: |
           git remote add upstream "$UPSTREAM_REMOTE"
           git fetch upstream main
-          set +e
-          git merge --no-edit upstream/main
-          rc=$?
-          set -e
-          if [ $rc -ne 0 ]; then
-            echo "merged=false" >> "$GITHUB_OUTPUT"
-            echo "::error::Upstream-Merge schlug fehl. Manuell loesen."
+          if ! git merge --no-edit upstream/main; then
             git merge --abort || true
+            echo "::error::Upstream-Merge-Konflikt. Lokal loesen: git fetch upstream && git merge upstream/main (auf ${DEPLOY_BRANCH}), dann pushen."
             exit 1
           fi
-          git push origin "$DEPLOY_BRANCH"
-          echo "merged=true" >> "$GITHUB_OUTPUT"
-
-      - name: Issue bei Merge-Konflikt
-        if: failure() && steps.merge.outcome == 'failure'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const title = `Upstream-Merge-Konflikt (${new Date().toISOString().slice(0,10)})`;
-            const body  = [
-              "Automatischer Upstream-Merge ist heute fehlgeschlagen.",
-              "",
-              "Manuell loesen:",
-              "```bash",
-              "git fetch upstream",
-              `git checkout ${process.env.DEPLOY_BRANCH || 'claude-cli-deploy'}`,
-              "git merge upstream/main",
-              "# Konflikte loesen, dann:",
-              `git push origin ${process.env.DEPLOY_BRANCH || 'claude-cli-deploy'}`,
-              "```",
-              "",
-              `Workflow-Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-            ].join("\n");
-            const { data: existing } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner, repo: context.repo.repo,
-              state: "open", labels: "upstream-merge-conflict",
-            });
-            if (existing.length === 0) {
-              await github.rest.issues.create({
-                owner: context.repo.owner, repo: context.repo.repo,
-                title, body, labels: ["upstream-merge-conflict"],
-              });
-            }
-
-  build-and-push:
-    if: github.repository != 'nexu-io/open-design'
-    needs: sync-upstream
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Deploy-Branch (nach Merge)
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.DEPLOY_BRANCH }}
 
       - name: Datum-Tag
         id: tag
