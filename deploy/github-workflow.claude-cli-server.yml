@@ -9,15 +9,20 @@
 # Liegt absichtlich hier statt direkt in .github/workflows/, damit ein
 # Reviewer-Hook im Dev-Setup nicht bei jeder Aenderung anschlaegt.
 #
-# SICHERHEIT: Nutzt KEINE untrusted Inputs (issue title, PR body, commit
-# message etc.) in run:-Blocks. Alle ${{ }}-Substitutionen sind Secrets,
-# eigene env-Vars oder kontrollierte github.repository_owner-Werte.
+# Baut das Claude-CLI-Server-Image aus dem gepinnten Deploy-Branch und pusht
+# es nach GHCR. KEIN automatischer Upstream-Merge:
 #
-# Upstream wird NUR lokal im Runner gemerged (kein git push zurueck), damit
-# der GITHUB_TOKEN keine `workflows`-Permission braucht (Upstream bringt teils
-# .github/workflows/-Dateien mit, die ein GITHUB_TOKEN nie pushen duerfte).
-# Trade-off: Der Fork-Branch wird nicht auto-aktualisiert; das Image ist aber
-# stets "latest upstream + deploy-layer".
+#   - Reproduzierbar: das Image ist immer "claude-cli-deploy wie er ist".
+#   - Der nightly-Cron rebuildet denselben Stand und zieht dabei Base-Image-
+#     Security-Patches (node:24-alpine) mit -- das ist sein eigentlicher Wert.
+#   - Upstream-Updates sind BEWUSST/manuell: lokal `git merge upstream/main`
+#     auf claude-cli-deploy, dabei den Dockerfile.claude-cli an Upstream-Drift
+#     anpassen (z.B. zusaetzlich noetige COPY-Layer fuer postinstall), pushen.
+#     Ein nightly-Auto-Merge wurde bewusst verworfen, weil Upstream-Drift den
+#     schlanken Build bricht (zuletzt: postinstall braucht tsconfig.json) und
+#     so nur rote Runs ohne Image-Update entstuenden.
+#
+# SICHERHEIT: Nutzt KEINE untrusted Inputs in run:-Blocks.
 
 name: Claude-CLI Server Image (Fork Only)
 
@@ -25,11 +30,6 @@ on:
   schedule:
     - cron: "30 4 * * *"
   workflow_dispatch:
-    inputs:
-      skip_upstream_merge:
-        description: "Upstream-Merge ueberspringen (nur Image rebuild)"
-        required: false
-        default: "false"
   push:
     branches:
       - claude-cli-deploy
@@ -46,7 +46,6 @@ permissions:
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/open-design-claude
   DEPLOY_BRANCH: claude-cli-deploy
-  UPSTREAM_REMOTE: https://github.com/nexu-io/open-design.git
 
 jobs:
   build-and-push:
@@ -57,22 +56,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_BRANCH }}
-          fetch-depth: 0
-
-      # Merge nur lokal im Runner -> fliesst in den Build, wird NICHT zum Fork
-      # zurueckgepusht. Konflikt = roter Run (in Actions + per Mail sichtbar).
-      - name: Upstream lokal mergen
-        if: github.event.inputs.skip_upstream_merge != 'true'
-        run: |
-          git config user.name  "od-claude-bot"
-          git config user.email "od-claude-bot@users.noreply.github.com"
-          git remote add upstream "$UPSTREAM_REMOTE"
-          git fetch upstream main
-          if ! git merge --no-edit upstream/main; then
-            git merge --abort || true
-            echo "::error::Upstream-Merge-Konflikt. Lokal loesen: git fetch upstream && git merge upstream/main (auf ${DEPLOY_BRANCH}), dann pushen."
-            exit 1
-          fi
 
       - name: Datum-Tag
         id: tag
