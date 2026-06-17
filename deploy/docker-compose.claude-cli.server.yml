@@ -23,6 +23,10 @@ services:
       OD_WEB_PORT: ${OPEN_DESIGN_PORT:-7456}
       HOME: /home/open-design
       CLAUDE_CONFIG_DIR: /home/open-design/.claude
+      # Subscription-OAuth-Token aus `claude setup-token` (NICHT ANTHROPIC_API_KEY).
+      # Wird vom od-admin-Login-Flow in .env.claude-cli geschrieben und hier
+      # injiziert; leer = nicht angemeldet.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
     networks:
       - od-net
     ports:
